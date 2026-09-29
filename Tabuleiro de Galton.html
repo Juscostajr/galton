@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tabuleiro de Galton</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c2230;--mut:#6a7286;--line:#c9cfdb;--acc:#e8590c;--peg:#5c6478;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151c;--card:#1b202b;--fg:#e8ebf2;--mut:#98a1b5;--line:#343c4e;--acc:#ff8a3d;--peg:#8e98b0}}
+:root[data-theme="dark"]{--bg:#12151c;--card:#1b202b;--fg:#e8ebf2;--mut:#98a1b5;--line:#343c4e;--acc:#ff8a3d;--peg:#8e98b0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:1.3rem;margin:0 0 4px}
+.wrap{max-width:1000px;margin:0 auto;padding:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+#board{flex:1 1 340px;max-width:520px;width:100%}
+canvas{display:block;width:100%;height:auto}
+.panel{flex:1 1 280px;display:flex;flex-direction:column;gap:12px;min-width:0}
+label{display:flex;justify-content:space-between;font-size:.9rem;margin-top:8px}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+button{flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:.95rem;cursor:pointer}
+button.p{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600}
+.st{font-size:.85rem;color:var(--mut);line-height:1.6;font-variant-numeric:tabular-nums}
+.st b{color:var(--fg)}
+.chk{justify-content:flex-start;gap:8px;align-items:center}
+p.n{font-size:.8rem;color:var(--mut);margin:6px 0 0}
+</style></head><body>
+<div class="wrap">
+<div class="card" id="board"><canvas id="cv"></canvas></div>
+<div class="panel">
+<div class="card">
+<h1>Tabuleiro de Galton</h1>
+<p class="n" style="margin:0">Simulação física com gravidade, colisões elásticas com pinos, paredes e entre bolinhas.</p>
+<label>Bolinhas <b id="vn">150</b></label><input type="range" id="n" min="10" max="300" step="10" value="150">
+<label>Fileiras de pinos <b id="vr">12</b></label><input type="range" id="r" min="6" max="14" step="1" value="12">
+<label>Vazão (bolinhas/s) <b id="vq">25</b></label><input type="range" id="q" min="5" max="80" step="5" value="25">
+<label>Elasticidade <b id="ve">0.30</b></label><input type="range" id="e" min="0.1" max="0.9" step="0.05" value="0.3">
+<label>Velocidade <b id="vs">1x</b></label><input type="range" id="s" min="1" max="4" step="1" value="1">
+<label class="chk"><input type="checkbox" id="cc" checked> Mostrar curva binomial teórica</label>
+<div class="btns"><button class="p" id="go">Iniciar</button><button id="pa">Pausar</button><button id="rs">Reiniciar</button></div>
+</div>
+<div class="card">
+<canvas id="hc" width="360" height="170"></canvas>
+<div class="st" id="stats"></div>
+</div>
+</div>
+</div>
+<script>
+const $=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d'),hc=$('hc'),hx=hc.getContext('2d');
+const W=520,H=800,dpr=Math.min(devicePixelRatio||1,2),cx=W/2,S=32,R=5.5,PR=3,G=600,K=4,FY=H-14,RS=28,Y0=135;
+cv.width=W*dpr;cv.height=H*dpr;hc.width=360*dpr;hc.height=170*dpr;
+let rows,pegs,segs,balls,counts,spawned,total,acc,running,binTop,pegE=.3,speed=1,rate=25;
+const bind=(i,f)=>$(i).oninput=()=>{f();};
+function build(){
+ rows=+$('r').value;pegs=[];segs=[];balls=[];counts=Array(rows+1).fill(0);spawned=0;acc=0;running=false;
+ for(let r=0;r<rows;r++)for(let k=0;k<=r;k++)pegs.push([cx+(k-r/2)*S,Y0+r*RS]);
+ binTop=Y0+rows*RS+15;
+ segs.push([cx-115,25,cx-14,105],[cx+115,25,cx+14,105]);
+ const xl=cx+(-rows/2-.5)*S,xr=cx+(rows/2+.5)*S;
+ segs.push([xl,105,xl,FY],[xr,105,xr,FY]);
+ for(let i=1;i<=rows;i++){const x=cx+(i-rows/2-.5)*S;segs.push([x,binTop,x,FY]);}
+ draw();stats();
+}
+function res(b,nx,ny,pen,e){
+ b.x+=nx*pen;b.y+=ny*pen;
+ const vn=b.vx*nx+b.vy*ny;
+ if(vn<0){b.vx-=(1+e)*vn*nx;b.vy-=(1+e)*vn*ny;
+  const tx=-ny,ty=nx,vt=b.vx*tx+b.vy*ty;b.vx-=vt*.03*tx;b.vy-=vt*.03*ty;}
+}
+function step(dt){
+ for(const b of balls){
+  b.vy+=G*dt;const dm=Math.exp(-K*dt);b.vx*=dm;b.vy*=dm;b.x+=b.vx*dt;b.y+=b.vy*dt;
+  if(b.y>Y0-15&&b.y<binTop+5)for(const p of pegs){
+   const dx=b.x-p[0],dy=b.y-p[1];if(Math.abs(dy)>R+PR||Math.abs(dx)>R+PR)continue;
+   const d2=dx*dx+dy*dy,m=R+PR;
+   if(d2<m*m){const d=Math.sqrt(d2)||1e-6;res(b,dx/d,dy/d,m-d,pegE);}
+  }
+  for(const s of segs){
+   const ax=s[0],ay=s[1],bx=s[2]-ax,by=s[3]-ay;
+   let t=((b.x-ax)*bx+(b.y-ay)*by)/(bx*bx+by*by);t=t<0?0:t>1?1:t;
+   const dx=b.x-(ax+t*bx),dy=b.y-(ay+t*by),d2=dx*dx+dy*dy;
+   if(d2<R*R){const d=Math.sqrt(d2);
+    if(d<1e-6){const L=Math.hypot(bx,by);res(b,-by/L,bx/L,R,pegE);}else res(b,dx/d,dy/d,R-d,pegE);}
+  }
+  if(b.y>FY-R){b.y=FY-R;if(b.vy>0)b.vy*=-.1;b.vx*=.9;}
+  if(b.y>binTop){b.vx*=.995;b.vy*=.998;
+   if(b.bin<0){const i=Math.floor((b.x-(cx+(-rows/2-.5)*S))/S);b.bin=Math.max(0,Math.min(rows,i));counts[b.bin]++;}}
+ }
+ // colisões entre bolinhas (grade espacial)
+ const grid=new Map(),D=2*R;
+ balls.forEach((b,i)=>{const k=(Math.floor(b.x/D)+100)*1000+Math.floor(b.y/D)+100;let a=grid.get(k);if(!a)grid.set(k,a=[]);a.push(i);});
+ balls.forEach((a,i)=>{
+  const gx=Math.floor(a.x/D)+100,gy=Math.floor(a.y/D)+100;
+  for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
+   const l=grid.get((gx+ox)*1000+gy+oy);if(!l)continue;
+   for(const j of l){if(j<=i)continue;const c=balls[j];
+    const dx=c.x-a.x,dy=c.y-a.y,d2=dx*dx+dy*dy;
+    if(d2<D*D&&d2>1e-9){const d=Math.sqrt(d2),nx=dx/d,ny=dy/d,pen=(D-d)/2;
+     a.x-=nx*pen;a.y-=ny*pen;c.x+=nx*pen;c.y+=ny*pen;
+     const vn=(c.vx-a.vx)*nx+(c.vy-a.vy)*ny;
+     if(vn<0){const j2=-(1+.3)*vn/2;a.vx-=j2*nx;a.vy-=j2*ny;c.vx+=j2*nx;c.vy+=j2*ny;}}
+   }}
+ });
+}
+function frame(){
+ if(running){
+  acc+=rate/60*speed;
+  while(acc>=1&&spawned<total){acc--;spawned++;
+   balls.push({x:cx+(Math.random()-.5)*120,y:35,vx:0,vy:0,bin:-1});}
+  const n=4*speed;for(let i=0;i<n;i++)step(1/240);
+ }
+ draw();stats();requestAnimationFrame(frame);
+}
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+function comb(n,k){let r=1;for(let i=1;i<=k;i++)r=r*(n-k+i)/i;return r;}
+function draw(){
+ const line=css('--line'),peg=css('--peg'),acc=css('--acc'),fg=css('--fg');
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+ ctx.strokeStyle=peg;ctx.lineWidth=3;ctx.lineCap='round';
+ for(const s of segs){ctx.beginPath();ctx.moveTo(s[0],s[1]);ctx.lineTo(s[2],s[3]);ctx.stroke();}
+ ctx.fillStyle=peg;
+ for(const p of pegs){ctx.beginPath();ctx.arc(p[0],p[1],PR,0,7);ctx.fill();}
+ for(const b of balls){
+  ctx.fillStyle=b.bin<0?acc:`hsl(${200+b.bin*(150/rows)},70%,55%)`;
+  ctx.beginPath();ctx.arc(b.x,b.y,R,0,7);ctx.fill();}
+ if($('cc').checked&&total){
+  const ppb=4*R*R*.87/(S-2),xl=cx+(-rows/2-.5)*S;
+  ctx.strokeStyle=fg;ctx.lineWidth=2;ctx.setLineDash([5,4]);ctx.beginPath();
+  for(let i=0;i<=rows;i++){const e=total*comb(rows,i)/2**rows,x=xl+(i+.5)*S,y=FY-e*ppb;
+   i?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+  ctx.stroke();ctx.setLineDash([]);
+ }
+}
+function stats(){
+ const n=counts.reduce((a,b)=>a+b,0);
+ let m=0,v=0;if(n){counts.forEach((c,i)=>m+=c*i);m/=n;counts.forEach((c,i)=>v+=c*(i-m)**2);v/=n;}
+ hx.setTransform(dpr,0,0,dpr,0,0);hx.clearRect(0,0,360,170);
+ const bw=340/(rows+1),mx=Math.max(.01,...counts.map(c=>n?c/n:0),comb(rows,Math.floor(rows/2))/2**rows)*1.15;
+ const peg=css('--peg'),acc=css('--acc'),fg=css('--fg');
+ counts.forEach((c,i)=>{const h=(n?c/n:0)/mx*140;hx.fillStyle=acc;hx.fillRect(10+i*bw+1,155-h,bw-2,h);});
+ hx.strokeStyle=fg;hx.lineWidth=2;hx.beginPath();
+ for(let i=0;i<=rows;i++){const y=155-comb(rows,i)/2**rows/mx*140,x=10+(i+.5)*bw;i?hx.lineTo(x,y):hx.moveTo(x,y);}
+ hx.stroke();hx.fillStyle=peg;hx.font='11px system-ui';hx.fillText('Distribuição observada (barras) × binomial (linha)',10,14);
+ $('stats').innerHTML=`Lançadas: <b>${spawned}</b>/${total||0} · Nas caixas: <b>${n}</b><br>`+
+  `Média (índice da caixa): <b>${n?m.toFixed(2):'–'}</b> · teórica <b>${(rows/2).toFixed(2)}</b><br>`+
+  `Desvio padrão: <b>${n?Math.sqrt(v).toFixed(2):'–'}</b> · teórico <b>${(Math.sqrt(rows)/2).toFixed(2)}</b>`;
+}
+bind('n',()=>$('vn').textContent=$('n').value);
+bind('q',()=>{rate=+$('q').value;$('vq').textContent=rate;});
+bind('e',()=>{pegE=+$('e').value;$('ve').textContent=pegE.toFixed(2);});
+bind('s',()=>{speed=+$('s').value;$('vs').textContent=speed+'x';});
+bind('r',()=>{$('vr').textContent=$('r').value;total=0;build();});
+$('cc').onchange=draw;
+$('go').onclick=()=>{build();total=+$('n').value;running=true;$('pa').textContent='Pausar';};
+$('pa').onclick=()=>{if(!total)return;running=!running;$('pa').textContent=running?'Pausar':'Continuar';};
+$('rs').onclick=()=>{total=0;build();$('pa').textContent='Pausar';};
+total=0;build();requestAnimationFrame(frame);
+</script></body></html>
